@@ -38,14 +38,59 @@ namespace AGiXTSDK
         // Auth Methods
         // ─────────────────────────────────────────────────────────────
 
-        public async Task<string> LoginAsync(string email, string otp)
+        /// <summary>
+        /// Login with username/password authentication.
+        /// </summary>
+        /// <param name="username">Username or email address</param>
+        /// <param name="password">User's password</param>
+        /// <param name="mfaToken">Optional TOTP code if MFA is enabled</param>
+        /// <returns>Login response with token on success</returns>
+        public async Task<Dictionary<string, object>> LoginAsync(string username, string password, string mfaToken = null)
+        {
+            try
+            {
+                var requestBody = new Dictionary<string, object>
+                {
+                    { "username", username },
+                    { "password", password }
+                };
+                if (!string.IsNullOrEmpty(mfaToken))
+                {
+                    requestBody["mfa_token"] = mfaToken;
+                }
+                var json = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var response = await _httpClient.PostAsync($"{_baseUri}/v1/login", content);
+                var responseJson = await response.Content.ReadAsStringAsync();
+                var result = JsonSerializer.Deserialize<Dictionary<string, object>>(responseJson);
+                if (response.IsSuccessStatusCode && result.ContainsKey("token"))
+                {
+                    _httpClient.DefaultRequestHeaders.Remove("Authorization");
+                    _httpClient.DefaultRequestHeaders.Add("Authorization", result["token"].ToString());
+                }
+                return result;
+            }
+            catch (Exception e)
+            {
+                return new Dictionary<string, object> { { "error", HandleError(e) } };
+            }
+        }
+
+        /// <summary>
+        /// Legacy login with magic link (email + OTP token).
+        /// Maintained for backward compatibility.
+        /// </summary>
+        /// <param name="email">User's email address</param>
+        /// <param name="otp">TOTP code from authenticator app</param>
+        /// <returns>Token string on success</returns>
+        public async Task<string> LoginMagicLinkAsync(string email, string otp)
         {
             try
             {
                 var requestBody = new { email = email, token = otp };
                 var json = JsonSerializer.Serialize(requestBody);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
-                var response = await _httpClient.PostAsync($"{_baseUri}/v1/login", content);
+                var response = await _httpClient.PostAsync($"{_baseUri}/v1/login/magic-link", content);
                 var responseJson = await response.Content.ReadAsStringAsync();
                 return responseJson;
             }
@@ -55,20 +100,187 @@ namespace AGiXTSDK
             }
         }
 
-        public async Task<string> RegisterUserAsync(string email, string firstName, string lastName)
+        /// <summary>
+        /// Register a new user with username/password authentication.
+        /// </summary>
+        /// <param name="email">User's email address</param>
+        /// <param name="password">User's password</param>
+        /// <param name="confirmPassword">Password confirmation</param>
+        /// <param name="firstName">User's first name (optional)</param>
+        /// <param name="lastName">User's last name (optional)</param>
+        /// <param name="username">Desired username (optional)</param>
+        /// <param name="organizationName">Company/organization name (optional)</param>
+        /// <returns>Response with user_id, username, token on success</returns>
+        public async Task<Dictionary<string, object>> RegisterUserAsync(
+            string email,
+            string password,
+            string confirmPassword,
+            string firstName = "",
+            string lastName = "",
+            string username = null,
+            string organizationName = null)
         {
             try
             {
-                var requestBody = new { email = email, first_name = firstName, last_name = lastName };
+                var requestBody = new Dictionary<string, object>
+                {
+                    { "email", email },
+                    { "password", password },
+                    { "confirm_password", confirmPassword },
+                    { "first_name", firstName },
+                    { "last_name", lastName }
+                };
+                if (!string.IsNullOrEmpty(username))
+                {
+                    requestBody["username"] = username;
+                }
+                if (!string.IsNullOrEmpty(organizationName))
+                {
+                    requestBody["organization_name"] = organizationName;
+                }
+
                 var json = JsonSerializer.Serialize(requestBody);
                 var content = new StringContent(json, Encoding.UTF8, "application/json");
                 var response = await _httpClient.PostAsync($"{_baseUri}/v1/user", content);
                 var responseJson = await response.Content.ReadAsStringAsync();
-                return responseJson;
+                var result = JsonSerializer.Deserialize<Dictionary<string, object>>(responseJson);
+                if (response.IsSuccessStatusCode && result.ContainsKey("token"))
+                {
+                    _httpClient.DefaultRequestHeaders.Remove("Authorization");
+                    _httpClient.DefaultRequestHeaders.Add("Authorization", result["token"].ToString());
+                }
+                return result;
             }
             catch (Exception e)
             {
-                return HandleError(e);
+                return new Dictionary<string, object> { { "error", HandleError(e) } };
+            }
+        }
+
+        /// <summary>
+        /// Get MFA setup information including QR code URI.
+        /// </summary>
+        /// <returns>MFA setup info with provisioning_uri, secret, and mfa_enabled status</returns>
+        public async Task<Dictionary<string, object>> GetMfaSetupAsync()
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync($"{_baseUri}/v1/user/mfa/setup");
+                var json = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<Dictionary<string, object>>(json);
+            }
+            catch (Exception e)
+            {
+                return new Dictionary<string, object> { { "error", HandleError(e) } };
+            }
+        }
+
+        /// <summary>
+        /// Enable MFA for the current user.
+        /// </summary>
+        /// <param name="mfaToken">TOTP code from authenticator app to verify setup</param>
+        /// <returns>Response with success message</returns>
+        public async Task<Dictionary<string, object>> EnableMfaAsync(string mfaToken)
+        {
+            try
+            {
+                var requestBody = new { mfa_token = mfaToken };
+                var json = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var response = await _httpClient.PostAsync($"{_baseUri}/v1/user/mfa/enable", content);
+                var responseJson = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<Dictionary<string, object>>(responseJson);
+            }
+            catch (Exception e)
+            {
+                return new Dictionary<string, object> { { "error", HandleError(e) } };
+            }
+        }
+
+        /// <summary>
+        /// Disable MFA for the current user.
+        /// </summary>
+        /// <param name="password">User's password (optional)</param>
+        /// <param name="mfaToken">Current TOTP code (optional)</param>
+        /// <returns>Response with success message</returns>
+        public async Task<Dictionary<string, object>> DisableMfaAsync(string password = null, string mfaToken = null)
+        {
+            try
+            {
+                var requestBody = new Dictionary<string, object>();
+                if (!string.IsNullOrEmpty(password))
+                {
+                    requestBody["password"] = password;
+                }
+                if (!string.IsNullOrEmpty(mfaToken))
+                {
+                    requestBody["mfa_token"] = mfaToken;
+                }
+                var json = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var response = await _httpClient.PostAsync($"{_baseUri}/v1/user/mfa/disable", content);
+                var responseJson = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<Dictionary<string, object>>(responseJson);
+            }
+            catch (Exception e)
+            {
+                return new Dictionary<string, object> { { "error", HandleError(e) } };
+            }
+        }
+
+        /// <summary>
+        /// Change the current user's password.
+        /// </summary>
+        /// <param name="currentPassword">Current password</param>
+        /// <param name="newPassword">New password</param>
+        /// <param name="confirmPassword">New password confirmation</param>
+        /// <returns>Response with success message</returns>
+        public async Task<Dictionary<string, object>> ChangePasswordAsync(string currentPassword, string newPassword, string confirmPassword)
+        {
+            try
+            {
+                var requestBody = new
+                {
+                    current_password = currentPassword,
+                    new_password = newPassword,
+                    confirm_password = confirmPassword
+                };
+                var json = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var response = await _httpClient.PostAsync($"{_baseUri}/v1/user/password/change", content);
+                var responseJson = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<Dictionary<string, object>>(responseJson);
+            }
+            catch (Exception e)
+            {
+                return new Dictionary<string, object> { { "error", HandleError(e) } };
+            }
+        }
+
+        /// <summary>
+        /// Set a password for users who don't have one (e.g., social login users).
+        /// </summary>
+        /// <param name="newPassword">New password</param>
+        /// <param name="confirmPassword">New password confirmation</param>
+        /// <returns>Response with success message</returns>
+        public async Task<Dictionary<string, object>> SetPasswordAsync(string newPassword, string confirmPassword)
+        {
+            try
+            {
+                var requestBody = new
+                {
+                    new_password = newPassword,
+                    confirm_password = confirmPassword
+                };
+                var json = JsonSerializer.Serialize(requestBody);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var response = await _httpClient.PostAsync($"{_baseUri}/v1/user/password/set", content);
+                var responseJson = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<Dictionary<string, object>>(responseJson);
+            }
+            catch (Exception e)
+            {
+                return new Dictionary<string, object> { { "error", HandleError(e) } };
             }
         }
 
